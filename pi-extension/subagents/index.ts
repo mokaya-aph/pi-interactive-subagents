@@ -1,7 +1,7 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { keyHint } from "@mariozechner/pi-coding-agent";
-import { Type, type Static } from "@sinclair/typebox";
-import { Box, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { keyHint } from "@earendil-works/pi-coding-agent";
+import { Type, type Static } from "typebox";
+import { Box, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -156,9 +156,9 @@ interface ListedAgentDefinition extends AgentDefinition {
  * process) only when its frontmatter declares a non-empty `subagent_agents`.
  */
 const SPAWNING_TOOLS = [
-  "subagent",
-  "subagent_message",
-  "subagents_list",
+  "pane_subagent",
+  "pane_subagent_message",
+  "pane_subagents_list",
 ] as const;
 
 /** Built-in tools pi provides natively — no extension needs to be loaded. */
@@ -216,9 +216,21 @@ function getToolExtensionPath(tool: string): string | undefined {
     return fileURLToPath(import.meta.url);
   }
   const extBase = join(getAgentConfigDir(), "extensions");
+  // Local port: web tools come from the pi-web-access package, not from
+  // upstream's standalone ~/.pi/agent/extensions/web-*/ directories.
+  const webAccess = join(
+    getAgentConfigDir(),
+    "npm",
+    "node_modules",
+    "pi-web-access",
+    "index.ts",
+  );
   const map: Record<string, string> = {
-    web_search: join(extBase, "web-search", "index.ts"),
-    web_fetch: join(extBase, "web-fetch", "index.ts"),
+    web_search: webAccess,
+    fetch_content: webAccess,
+    source_check: webAccess,
+    get_search_content: webAccess,
+    web_fetch: webAccess,
     video_extract: join(extBase, "video-extract", "index.ts"),
     youtube_search: join(extBase, "youtube-search", "index.ts"),
     google_image_search: join(extBase, "google-image-search", "index.ts"),
@@ -358,7 +370,7 @@ function getDefaultSessionDirFor(cwd: string, agentDir: string): string {
 }
 
 function resolveEffectiveSessionMode(
-  params: Static<typeof SubagentParams>,
+  _params: Static<typeof SubagentParams>,
   agentDefs: AgentDefaults | null,
 ): SubagentSessionMode {
   return agentDefs?.sessionMode ?? "standalone";
@@ -470,7 +482,7 @@ function formatUsageSegments(stats: SessionStats): string[] {
 }
 
 /** ANSI colors for widget status icons (raw, since the widget bypasses theme). */
-const ICON_GREEN = "\x1b[38;2;126;186;103m";
+const _ICON_GREEN = "\x1b[38;2;126;186;103m";
 const ICON_YELLOW = "\x1b[38;2;214;181;94m";
 const ICON_RED = "\x1b[38;2;224;108;117m";
 const ICON_DIM = "\x1b[38;2;128;128;128m";
@@ -508,10 +520,10 @@ function muxUnavailableResult() {
     content: [
       {
         type: "text" as const,
-        text: `Subagents require tmux. ${muxSetupHint()}`,
+        text: `Subagents require herdr. ${muxSetupHint()}`,
       },
     ],
-    details: { error: "tmux not available" },
+    details: { error: "herdr not available" },
   };
 }
 
@@ -555,7 +567,7 @@ function resolveResultPresentation(
 ): string {
   // Name is the persistent handle: the same name steers a running subagent or
   // resumes a finished one, so follow-ups always reference it.
-  const sessionRef = `\n\nFollow up with subagent_message({ name: "${name}", message: "…" })`;
+  const sessionRef = `\n\nFollow up with pane_subagent_message({ name: "${name}", message: "…" })`;
 
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
@@ -567,7 +579,7 @@ function resolveResultPresentation(
       `(provider/agent error — auto-retry exhausted).\n\n` +
       `Error: ${result.errorMessage}\n\n` +
       `The subagent did not produce a result. You can retry by spawning a new ` +
-      `subagent or resume the session with subagent_message.${sessionRef}`
+      `subagent or resume the session with pane_subagent_message.${sessionRef}`
     );
   }
 
@@ -584,7 +596,7 @@ interface SubagentResult {
   task: string;
   summary: string;
   sessionFile?: string;
-  /** Canonical session header id, used for follow-ups via subagent_message. */
+  /** Canonical session header id, used for follow-ups via pane_subagent_message. */
   sessionId?: string;
   claudeSessionId?: string;
   exitCode: number;
@@ -827,7 +839,7 @@ function buildSubagentToolAllowlist(
  * (`--no-extensions` + `--tools` + one `-e` per tool-backing extension).
  *
  * This is the single source of truth for reconstructing a subagent's sandbox,
- * used both by the initial `launchSubagent` and by the `subagent_message`
+ * used both by the initial `launchSubagent` and by the `pane_subagent_message`
  * resume path so the two can never drift. Env vars (PI_SUBAGENT_AGENT /
  * PI_SUBAGENT_ALLOWED / PI_CODING_AGENT_DIR) and cwd are the caller's
  * responsibility since they differ slightly between launch and resume.
@@ -953,7 +965,7 @@ const reservedNames = new Set<string>();
  * spawner session. Considers (a) currently-running subagents, (b) names
  * reserved by parallel in-flight spawns, and (c) every name already recorded in
  * the spawner's persistent registry — so a defaulted name never collides with a
- * finished subagent either. This lets `subagent_message({ name })` address any
+ * finished subagent either. This lets `pane_subagent_message({ name })` address any
  * subagent of this session unambiguously, running or finished.
  *
  * `registryNames` is the set of names already taken in the registry (empty when
@@ -1336,7 +1348,7 @@ async function launchSubagent(
   const toolAllowlist = buildSubagentToolAllowlist(effectiveTools, { grantSpawning });
 
   // Snapshot the fully-resolved sandbox beside the session file so a later
-  // `subagent_message({ name })` resume can replay the exact same
+  // `pane_subagent_message({ name })` resume can replay the exact same
   // restriction instead of relaunching pi with all global extensions + tools.
   const loadout: SubagentLoadout = {
     agent: params.agent ?? null,
@@ -1503,7 +1515,7 @@ function deliverPendingQuestion(running: RunningSubagent): void {
   const name = running.name; // unique per session (deduped at spawn) — targets the reply
   const sessionId = existsSync(running.sessionFile) ? getSessionId(running.sessionFile) : null;
   const elapsed = Math.floor((Date.now() - running.startTime) / 1000);
-  const replyHint = `\n\nReply with subagent_message({ name: "${name}", message: "…" }) — the same name works whether it is still running or has since exited. It stays open until you reply.`;
+  const replyHint = `\n\nReply with pane_subagent_message({ name: "${name}", message: "…" }) — the same name works whether it is still running or has since exited. It stays open until you reply.`;
 
   latestPi?.sendMessage(
     {
@@ -1615,7 +1627,9 @@ async function watchSubagent(
   } catch (err: any) {
     try {
       closeSurface(surface);
-    } catch {}
+    } catch {
+      // Pane may already be gone; the error path must not mask the real failure.
+    }
     runningSubagents.delete(running.id);
 
     if (signal.aborted) {
@@ -1682,20 +1696,20 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // ── subagent tool ──
   pi.registerTool({
-      name: "subagent",
-      label: "Subagent",
+      name: "pane_subagent",
+      label: "Pane Subagent",
       description:
         "Spawn a sub-agent in a dedicated terminal multiplexer pane. " +
         "This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. " +
         "When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. " +
-        "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
+        "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call pane_subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
         "DO NOT fabricate, assume, or summarize results after calling this tool. " +
         "After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.",
       promptSnippet:
         "Spawn a sub-agent in a dedicated terminal multiplexer pane. " +
         "This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. " +
         "When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. " +
-        "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
+        "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call pane_subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
         "DO NOT fabricate, assume, or summarize results after calling this tool. " +
         "After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.",
       parameters: SubagentParams,
@@ -1718,7 +1732,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // Strict whitelist at every depth. The caller's permitted set is:
         //   • a restricted subagent (PI_SUBAGENT_ALLOWED) → only its pinned agents;
         //   • a top-level session → every discoverable agent, i.e. exactly what
-        //     `subagents_list` shows.
+        //     `pane_subagents_list` shows.
         // Every spawn must name an agent in that set. The lone exception is a
         // top-level `fork: true` clone, which has no role and inherits the
         // caller's own already-trusted toolset. Without this guard a missing or
@@ -1806,7 +1820,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           if (reservedName) reservedNames.delete(reservedName);
         }
 
-        // Persist name → session so subagent_message({ name }) can resume this
+        // Persist name → session so pane_subagent_message({ name }) can resume this
         // subagent after it finishes (and after a pi restart). Done at launch,
         // not completion, so the handle exists even if the parent dies mid-run.
         registerName(parentArtifactDir, running.name, {
@@ -1949,10 +1963,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       },
     });
 
-  // ── subagents_list tool ──
+  // ── pane_subagents_list tool ──
   pi.registerTool({
-      name: "subagents_list",
-      label: "List Subagents",
+      name: "pane_subagents_list",
+      label: "List Pane Subagents",
       description:
         "List all available subagent definitions. " +
         "Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. " +
@@ -2004,10 +2018,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
 
 
-  // ── subagent_message tool ──
+  // ── pane_subagent_message tool ──
   pi.registerTool({
-      name: "subagent_message",
-      label: "Message Subagent",
+      name: "pane_subagent_message",
+      label: "Message Pane Subagent",
       description:
         "Send a message to a subagent by name. Names are unique within your session and persist after a subagent finishes, " +
         "so the SAME name works whether the subagent is running or finished: if it is still running, your message steers its live session; " +
@@ -2124,7 +2138,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // mutating the same .jsonl corrupts it. Steer it by name instead.
         for (const r of runningSubagents.values()) {
           if (resolve(r.sessionFile) === resolve(sessionPath)) {
-            const err = `Subagent "${requestedName}" is still running as "${r.name}". Your message will steer it; resending as a steer.`;
             return handleSubagentSteer({ name: r.name, message: params.message });
           }
         }
@@ -2320,12 +2333,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     });
 
   // /subagent command — spawn a subagent by name
-  pi.registerCommand("subagent", {
-    description: "Spawn a subagent: /subagent <agent> <task>",
+  pi.registerCommand("pane-subagent", {
+    description: "Spawn a subagent: /pane-subagent <agent> <task>",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (!trimmed) {
-        ctx.ui.notify("Usage: /subagent <agent> [task]", "warning");
+        ctx.ui.notify("Usage: /pane-subagent <agent> [task]", "warning");
         return;
       }
 
@@ -2402,7 +2415,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         // Clean summary (remove follow-up ref and leading label for display)
         const summary = rawContent
-          .replace(/\n\nFollow up with subagent_message[\s\S]+$/, "")
+          .replace(/\n\nFollow up with pane_subagent_message[\s\S]+$/, "")
           .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, "")
           .replace(`Sub-agent "${name}" failed (exit code ${exitCode}).\n\n`, "")
           .replace(
@@ -2429,7 +2442,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
               contentLines.push(
                 theme.fg(
                   "dim",
-                  `Follow up:  subagent_message({ name: "${details.name}", message: "…" })`,
+                  `Follow up:  pane_subagent_message({ name: "${details.name}", message: "…" })`,
                 ),
               );
             }
@@ -2510,7 +2523,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           contentLines.push(details.question ?? "");
           contentLines.push("");
           contentLines.push(
-            theme.fg("dim", `Reply: subagent_message({ name: "${name}", message: "…" })`),
+            theme.fg("dim", `Reply: pane_subagent_message({ name: "${name}", message: "…" })`),
           );
         } else {
           const preview = (details.question ?? "").split("\n")[0].slice(0, width - 10);

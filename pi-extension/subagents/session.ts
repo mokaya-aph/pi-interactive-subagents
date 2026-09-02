@@ -82,7 +82,7 @@ export function seedSubagentSessionFile(params: {
 
 /**
  * A snapshot of everything needed to reconstruct a subagent's sandbox when its
- * session is later resumed via `subagent_message({ sessionId })`.
+ * session is later resumed via `pane_subagent_message({ sessionId })`.
  *
  * Written next to the session file as `<sessionFile>.loadout.json` at spawn
  * time. Resume replays this exact snapshot so the reincarnated process gets the
@@ -148,7 +148,7 @@ export function readSubagentLoadout(sessionFile: string): SubagentLoadout | null
 // Each spawner session (the top-level pi session, or a worker that spawns its
 // own children) gets a registry mapping a subagent's display name to the
 // session file it ran in. Names are unique per spawner session and persist on
-// disk, so `subagent_message({ name })` can steer a running subagent or resume
+// disk, so `pane_subagent_message({ name })` can steer a running subagent or resume
 // a finished one by the same handle — even across a pi restart. The registry
 // lives in the spawner's own artifact dir, which is directly addressable from
 // the spawner's session id (no sessions-tree scan, so resume stays fast).
